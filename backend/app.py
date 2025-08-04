@@ -1,52 +1,31 @@
 import os
-import bcrypt
 import pymysql
-from flask import Flask, request, jsonify, render_template
-from dotenv import load_dotenv
-
-load_dotenv()
+from flask import Flask, render_template, request, redirect, url_for, session, flash
 
 app = Flask(__name__)
-app.secret_key = os.getenv("APP_SECRET_KEY")
+app.secret_key = os.getenv('SECRET_KEY', 'defaultsecretkey')
 
-# DB Config
-db = pymysql.connect(
-    host=os.getenv("MYSQL_HOST"),
-    user=os.getenv("MYSQL_USER"),
-    password=os.getenv("MYSQL_PASSWORD"),
-    database=os.getenv("MYSQL_DB"),
-    port=int(os.getenv("MYSQL_PORT"))
-)
+# Only connect to DB if not in test environment
+if os.environ.get("FLASK_ENV") != "test":
+    db = pymysql.connect(
+        host=os.getenv("DB_HOST", "localhost"),
+        user=os.getenv("DB_USER", "root"),
+        password=os.getenv("DB_PASSWORD", ""),
+        database=os.getenv("DB_NAME", "test_db")
+    )
 
-@app.route("/")
+    cursor = db.cursor()
+
+@app.route('/')
 def home():
-    return render_template("index.html")
+    return 'Welcome to Flask App!'
 
-@app.route("/register", methods=["POST"])
-def register():
-    data = request.json
-    username = data.get("username")
-    password = data.get("password")
-    hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
-
-    cursor = db.cursor()
-    cursor.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (username, hashed_pw))
-    db.commit()
-    return jsonify({"message": "Registration successful"})
-
-@app.route("/login", methods=["POST"])
+@app.route('/login')
 def login():
-    data = request.json
-    username = data.get("username")
-    password = data.get("password")
+    return 'Login Page'
 
-    cursor = db.cursor()
-    cursor.execute("SELECT password FROM users WHERE username = %s", (username,))
-    result = cursor.fetchone()
-    
-    if result and bcrypt.checkpw(password.encode("utf-8"), result[0].encode("utf-8")):
-        return jsonify({"message": "Login successful"})
-    return jsonify({"message": "Invalid credentials"}), 401
+@app.route('/register')
+def register():
+    return 'Register Page'
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+# You can add more routes here
