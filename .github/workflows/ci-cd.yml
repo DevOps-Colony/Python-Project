@@ -1,0 +1,103 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REPOSITORY: flask-auth-app
+  HELM_CHART_PATH: ./helm/python-app
+  SONAR_PROJECT_KEY: DevOps-Colony_Python-Project
+  SONAR_ORGANIZATION: DevOps-Colony
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/flask-auth-app
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests
+
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'docker.io/library/python:3.11-slim'
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v2
+        with:
+          projectBaseDir: .
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: Build Docker image
+        run: |
+          docker build -t $DOCKER_IMAGE:${{ github.sha }} .
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push Docker image
+        run: docker push $DOCKER_IMAGE:${{ github.sha }}
+
+  deploy:
+    needs: build-test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init + Apply
+        run: |
+          cd terraform/staging
+          terraform init -backend-config="../../backend.tf"
+          terraform apply -auto-approve
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+
+      - name: Deploy using Helm
+        run: |
+          helm upgrade --install flask-auth ./helm/python-app \
+            --namespace default \
+            --set image.repository=$DOCKER_IMAGE \
+            --set image.tag=${{ github.sha }}
+
+      - name: Output LoadBalancer URL
+        run: |
+          echo "Fetching ALB..."
+          kubectl get svc -n default flask-auth -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
