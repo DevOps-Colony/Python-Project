@@ -1,4 +1,4 @@
-name: 🚀 CI/CD Pipeline
+name: CI/CD Pipeline
 
 on:
   push:
@@ -16,37 +16,28 @@ env:
   DOCKER_IMAGE: ${{ secrets.DOCKER_USERNAME }}/flask-auth-app
 
 jobs:
-  build:
-    name: 🔨 Build
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: 🐍 Set up Python
-        uses: actions/setup-python@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: 3.11
 
-      - name: 📦 Install dependencies
-        run: |
-          pip install -r backend/requirements.txt
+      - name: Install Python dependencies
+        run: pip install -r backend/requirements.txt
 
-      - name: ✅ Run Unit Tests
-        run: |
-          pytest tests/
+      - name: Set PYTHONPATH
+        run: echo "PYTHONPATH=$GITHUB_WORKSPACE/backend" >> $GITHUB_ENV
 
-  scan:
-    name: 🔍 Security Scan
-    runs-on: ubuntu-latest
-    needs: build
+      - name: Run unit tests
+        run: pytest tests/
 
-    steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v3
-
-      - name: 🐳 Trivy Scan
+      - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.DOCKER_IMAGE }}:latest
@@ -55,16 +46,7 @@ jobs:
           ignore-unfixed: true
           vuln-type: os,library
 
-  sonarcloud:
-    name: 📊 SonarCloud Analysis
-    runs-on: ubuntu-latest
-    needs: build
-
-    steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v3
-
-      - name: ☁️ SonarCloud Scan
+      - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@master
         with:
           projectKey: ${{ env.SONAR_PROJECT_KEY }}
@@ -72,61 +54,33 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  docker:
-    name: 🐳 Build & Push Docker Image
-    runs-on: ubuntu-latest
-    needs: [build, scan]
-
-    steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v3
-
-      - name: 🔧 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: 🔐 Login to DockerHub
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: 🐳 Build and Push Docker Image
-        run: |
-          docker build -t $DOCKER_IMAGE:latest .
-          docker push $DOCKER_IMAGE:latest
-
-  deploy:
-    name: 🚀 Deploy to EKS
-    runs-on: ubuntu-latest
-    needs: docker
-
-    steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v3
-
-      - name: 📦 Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: ⛓️ Set up kubectl
-        uses: azure/setup-kubectl@v3
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
         with:
-          version: 'latest'
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: ⛓️ Set up Helm
-        uses: azure/setup-helm@v3
-        with:
-          version: v3.13.0
+      - name: Build Docker image
+        run: docker build -t ${{ env.DOCKER_IMAGE }} ./backend
 
-      - name: 🎯 Update kubeconfig
+      - name: Push Docker image
+        run: docker push ${{ env.DOCKER_IMAGE }}
+
+      - name: Deploy infrastructure with Terraform
         run: |
-          aws eks update-kubeconfig --name flask-app-cluster-staging --region $AWS_REGION
+          terraform -chdir=terraform/staging init -backend-config=../backend-config/backend-config-staging.tfvars
+          terraform -chdir=terraform/staging apply -auto-approve -var-file=../backend-config/backend-config-staging.tfvars
 
-      - name: 🚀 Deploy using Helm
+      - name: Deploy application using Helm
         run: |
-          helm upgrade --install flask-auth-app $HELM_CHART_PATH --namespace default --create-namespace \
-            --set image.repository=$DOCKER_IMAGE \
-            --set image.tag=latest
+          helm upgrade --install flask-auth-app ${{ env.HELM_CHART_PATH }} \
+            --set image.repository=${{ env.DOCKER_IMAGE }} \
+            --set image.tag=latest \
+            --namespace flask --create-namespace
